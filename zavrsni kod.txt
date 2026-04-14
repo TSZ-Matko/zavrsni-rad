@@ -1,0 +1,217 @@
+#include <Servo.h>
+#include <SPI.h>
+#include <MFRC522.h>
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+
+// RFID reader
+#define SS_PIN  53   // SDA pin RFID čitača (na MEGA najčešće 53)
+#define RST_PIN 5    // RST pin RFID čitača
+MFRC522 mfrc522(SS_PIN, RST_PIN); // Kreiraj RFID objekt
+
+// LCD ekran
+LiquidCrystal_I2C lcd(0x27, 16, 2); // Adresa 0x27, 16 znakova x 2 reda
+
+// Servo motori
+Servo servo1;
+Servo servo2;
+const int servo1Pin = 6;
+const int servo2Pin = 7;
+
+// Tipkee:\Downloads\RFID.ino
+const int buttonPins[3] = {22, 23, 24}; // Prilagodio sam za MEGA
+
+// LED: R, G pinovi za svaku od 3 LED-ice
+const int ledPins[3][3] = {
+  {25, 26},  // LED1: R, G
+  {27, 28},   // LED2: R, G
+  {29, 30}   // LED3: R, G
+};
+
+// Ispravan redoslijed pritiska tipki
+const int correctOrder[3] = {1, 2, 0}; 
+
+int inputOrder[3];
+int inputIndex = 0;
+bool sequenceComplete = false;
+bool servo2Moved = false;
+bool cardScanned = false; 
+
+// Dozvoljeni UID kartice (OVDJE STAVI SVOJ UID)
+byte allowedUID[4] = {0xC9, 0xD6, 0xC8, 0x55}; 
+
+unsigned long sequenceCompleteTime = 0;
+
+void setup() {
+  Serial.begin(9600);
+
+  // RFID
+  SPI.begin(); 
+  mfrc522.PCD_Init(); 
+
+  // LCD ekran
+  lcd.init();   
+  lcd.backlight(); 
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("Skeniraj karticu");
+
+  // Servo
+  servo1.attach(servo1Pin);
+  servo2.attach(servo2Pin);
+  servo1.write(0);
+  servo2.write(0);
+
+  // Tipke
+  for (int i = 0; i < 3; i++) {
+    pinMode(buttonPins[i], INPUT_PULLUP);
+  }
+
+  // LED-ice
+  // LED-ice
+for (int i = 0; i < 3; i++) {
+  for (int j = 0; j < 2; j++) {  // <-- umjesto j < 3
+    pinMode(ledPins[i][j], OUTPUT);
+    digitalWrite(ledPins[i][j], LOW);
+  }
+}
+
+}
+
+void loop() {
+  if (!cardScanned) {
+    checkForCard();
+  } else if (!sequenceComplete) {
+    checkButtons();
+  } else {  // sekvenca završena
+    if (!servo2Moved) {
+      servo2.write(90);  // Pomakni servo2
+      servo2Moved = true;
+    }
+
+    // Ako je prošlo 3 sekunde od završetka
+    if (millis() - sequenceCompleteTime >= 3000) {
+      resetSequence();
+    }
+  }
+}
+
+
+
+// Funkcija: provjera RFID kartice
+void checkForCard() {
+  if (!mfrc522.PICC_IsNewCardPresent() || !mfrc522.PICC_ReadCardSerial()) {
+    return;
+  }
+
+  bool validCard = true;
+  for (byte i = 0; i < 4; i++) {
+    if (mfrc522.uid.uidByte[i] != allowedUID[i]) {
+      validCard = false;
+      break;
+    }
+  }
+
+  if (validCard) {
+    Serial.println("Kartica prihvacena!");
+    cardScanned = true;
+    servo1.write(90); // Prvi servo se pomakne
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("Rijesi zagonetku");
+
+  } else {
+    Serial.println("Kriva kartica!");
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("Kriva kartica");
+    delay(2000);
+    lcd.clear();
+    lcd.print("Skeniraj karticu");
+  }
+
+  mfrc522.PICC_HaltA();
+}
+
+// Funkcija: provjera tipki
+void checkButtons() {
+  for (int i = 0; i < 3; i++) {
+    if (digitalRead(buttonPins[i]) == LOW) {
+      delay(200); // debounce
+
+      inputOrder[inputIndex] = i;
+
+      if (inputOrder[inputIndex] != correctOrder[inputIndex]) {
+        blinkRed();
+        lcd.clear();
+        lcd.setCursor(0, 0);
+        lcd.print("Blago je unisteno");
+        delay(3000);
+        resetSequence();
+        return;
+      }
+
+      if (inputIndex == 2) {  // Ako je zadnji gumb točan
+        setAllLEDs(0, 255, 0); // Sve LED zelene
+        sequenceComplete = true;
+        sequenceCompleteTime = millis();  // ⬅️ ZAPAMTI KADA JE SEKVENCA ZAVRŠILA
+
+        lcd.clear();
+        lcd.setCursor(0, 0);
+        lcd.print("Trezor je otvoren");
+      } else {
+        blinkSingleGreen(inputIndex);
+      }
+
+      inputIndex++;
+      while (digitalRead(buttonPins[i]) == LOW); // čekaj puštanje
+    }
+  }
+}
+
+
+// Funkcija: upali sve LED-ice
+void setAllLEDs(int r, int g, int b) {
+  for (int i = 0; i < 3; i++) {
+    digitalWrite(ledPins[i][0], r > 0 ? HIGH : LOW);
+    digitalWrite(ledPins[i][1], g > 0 ? HIGH : LOW);
+  }
+}
+
+
+
+// Funkcija: bljeskanje crvenim LED-icama
+void blinkRed() {
+  for (int i = 0; i < 3; i++) {
+    setAllLEDs(255, 0, 0);
+    delay(300);
+    setAllLEDs(0, 0, 0);
+    delay(300);
+  }
+}
+
+// Funkcija: resetiranje sekvence
+void resetSequence() {
+  inputIndex = 0;
+  sequenceComplete = false;
+  servo2Moved = false;
+  cardScanned = false;
+  setAllLEDs(0, 0, 0);
+  servo2.write(0);
+
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("Skeniraj karticu");
+}
+
+// Funkcija: upali samo jednu LED-icu zeleno
+void setSingleLED(int ledNum, int r, int g, int b) {
+  digitalWrite(ledPins[ledNum][0], r > 0 ? HIGH : LOW);
+  digitalWrite(ledPins[ledNum][1], g > 0 ? HIGH : LOW);
+}
+
+
+
+void blinkSingleGreen(int ledIndex) {
+  setSingleLED(ledIndex, 0, 255, 0);
+}
